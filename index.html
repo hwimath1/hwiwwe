@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>순환소수의 표현과 대소관계</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- MathJax 로드 (LaTeX 렌더링용) -->
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" defer></script>
+  
+  <style>
+    body {
+      margin: 0; padding: 0;
+      font-family: sans-serif;
+      background: #f4f4f4;
+    }
+    .centered {
+      text-align: center;
+      margin-top: 50px;
+    }
+    .difficulty-btn {
+      padding: 10px 20px;
+      margin: 10px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    #quiz-container {
+      width: 90%;
+      max-width: 600px;
+      margin: 30px auto;
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+    }
+    #energy-bar {
+      width: 100%;
+      height: 20px;
+      background-color: #ddd;
+      margin-bottom: 10px;
+      position: relative;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    #energy-inner {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 100%;
+      background-color: #ff8080;
+      transition: width 0.2s linear;
+    }
+    .question-box {
+      margin: 20px 0;
+    }
+    .choice {
+      display: block;
+      margin: 8px 0;
+      cursor: pointer;
+      padding: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .choice:hover {
+      background-color: #fafafa;
+    }
+    #score-display {
+      margin-bottom: 10px;
+    }
+    #lives-display {
+      margin-bottom: 10px;
+    }
+    #total-time {
+      margin-bottom: 10px;
+    }
+    #name-input {
+      font-size: 1rem;
+      padding: 8px;
+      width: 200px;
+    }
+    #submit-score {
+      margin-top: 20px;
+      padding: 10px 20px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+<div id="start-page" class="centered">
+  <h1>순환소수의 표현과 대소관계</h1>
+  <div>
+    <input id="name-input" type="text" placeholder="이름을 입력하세요" />
+  </div>
+  <div style="margin-top:30px;">
+    <p>난이도를 선택하세요</p>
+    <button class="difficulty-btn" data-level="최상">최상(20초, 문제당 20점)</button>
+    <button class="difficulty-btn" data-level="상">상(30초, 문제당 15점)</button>
+    <button class="difficulty-btn" data-level="중">중(40초, 문제당 13점)</button>
+    <button class="difficulty-btn" data-level="하">하(무제한, 문제당 10점)</button>
+  </div>
+</div>
+
+<div id="quiz-container" class="hidden">
+  <div id="score-display">점수: 0</div>
+  <div id="lives-display">남은 기회: 3</div>
+  <div id="total-time">총 진행 시간: 0초</div>
+  <div id="energy-bar"><div id="energy-inner"></div></div>
+  
+  <div class="question-box">
+    <div id="question-text"></div>
+    <div id="choices-container"></div>
+  </div>
+</div>
+
+<div class="centered hidden" id="end-page">
+  <h2 id="end-title"></h2>
+  <p id="final-score"></p>
+  <button id="submit-score">점수 전송</button>
+  <div id="response" style="white-space: pre; text-align:left; width:60%; max-width:600px; margin: 10px auto;"></div>
+</div>
+
+<script>
+// ------------------ 데이터 전송 함수 ------------------
+function saveData(game, name, score, elapsedTime) {
+  const FUNCTION_URL = "https://us-central1-record-f420d.cloudfunctions.net/report";
+
+  const requestData = {
+    game,
+    name,
+    score: parseInt(score, 10),
+    elapsedTime: parseInt(elapsedTime, 10)
+  };
+
+  fetch(FUNCTION_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestData)
+  })
+  .then(async (response) => {
+    const responseData = await response.json();
+    if (response.ok) {
+      document.getElementById('response').innerText =
+        `성공: ${JSON.stringify(responseData, null, 2)}`;
+    } else {
+      document.getElementById('response').innerText =
+        `오류: ${JSON.stringify(responseData, null, 2)}`;
+    }
+  })
+  .catch((error) => {
+    console.error('요청 실패:', error);
+    document.getElementById('response').innerText =
+      `네트워크 오류: ${error.message}`;
+  });
+}
+
+// ------------------ 문제/보기 셔플 함수 ------------------
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+function randomizeQuestionChoices(questions) {
+  questions.forEach(q => {
+    const correctChoice = q.choices[q.correctIndex];
+    const newChoices = [...q.choices];
+    shuffleArray(newChoices);
+    const newIndex = newChoices.indexOf(correctChoice);
+    q.choices = newChoices;
+    q.correctIndex = newIndex;
+  });
+}
+
+// ------------------ 문제 데이터 ------------------
+// #82 "0.9 □ 1" 정답을 "<"로 수정
+// #72 "1.3452 소수점 아래 101째: 뒤는 0으로 이어진다" -> 정답 "0"
+// #74, #76, #78, #80: 조건 추가(아래 주석 참고)
+// #50, #52, #54, #56~#70(분수 문제) => LaTeX 막대표기
+// 그 외(#2,#4,#6,#8 … #48, #84 … #110) 그대로 유지, 단 보기번호(① 등)는 제거
+
+const questionsData = [
+  // #2,#4,#6,#8 (O/X)
+  {
+    question: "2. 0.2999… (다음 소수가 순환소수인 것은 ○, 순환하지 않는 것은 ×표)",
+    choices: ["O", "X"],
+    correctIndex: 0
+  },
+  {
+    question: "4. 0.1333… (다음 소수가 순환소수인 것은 ○, 순환하지 않는 것은 ×표)",
+    choices: ["O", "X"],
+    correctIndex: 0
+  },
+  {
+    question: "6. 1.0167167… (다음 소수가 순환소수인 것은 ○, 순환하지 않는 것은 ×표)",
+    choices: ["O", "X"],
+    correctIndex: 0
+  },
+  {
+    question: "8. 1.272727… (다음 소수가 순환소수인 것은 ○, 순환하지 않는 것은 ×표)",
+    choices: ["O", "X"],
+    correctIndex: 0
+  },
+
+  // #10~#48 (순환마디)
+  {
+    question: "0.777…의 순환마디는?",
+    choices: ["7", "77", "777", "7777"],
+    correctIndex: 0
+  },
+  {
+    question: "0.0090909…의 순환마디는?",
+    choices: ["09", "90", "009", "909"],
+    correctIndex: 0
+  },
+  {
+    question: "1.747474…의 순환마디는?",
+    choices: ["74", "47", "747", "474"],
+    correctIndex: 0
+  },
+  {
+    question: "0.2333…의 순환마디는?",
+    choices: ["3", "23", "233", "333"],
+    correctIndex: 0
+  },
+  {
+    question: "1.872872…의 순환마디는?",
+    choices: ["872", "728", "287", "782"],
+    correctIndex: 0
+  },
+  {
+    question: "3.4567567567…의 순환마디는?",
+    choices: ["567", "675", "756", "5675"],
+    correctIndex: 0
+  },
+  {
+    question: "12.45124124124…의 순환마디는?",
+    choices: ["124", "241", "412", "1241"],
+    correctIndex: 0
+  },
+  {
+    question: "1.54315431…의 순환마디는?",
+    choices: ["5431", "4315", "3154", "1543"],
+    correctIndex: 0
+  },
+  {
+    question: "0.343434…의 순환마디는?",
+    choices: ["34", "43", "343", "434"],
+    correctIndex: 0
+  },
+  {
+    question: "3.4939393939…의 순환마디는?",
+    choices: ["93", "39", "493", "939"],
+    correctIndex: 0
+  },
+  {
+    question: "1.021021021…의 순환마디는?",
+    choices: ["021", "102", "210", "1021"],
+    correctIndex: 0
+  },
+  {
+    question: "8.125432543…의 순환마디는?",
+    choices: ["2543", "5432", "4325", "3254"],
+    correctIndex: 0
+  },
+  {
+    question: "27.327327…의 순환마디는?",
+    choices: ["327", "273", "732", "723"],
+    correctIndex: 0
+  },
+  {
+    question: "0.888…의 순환마디는?",
+    choices: ["8", "88", "888", "8888"],
+    correctIndex: 0
+  },
+  {
+    question: "0.636363…의 순환마디는?",
+    choices: ["63", "36", "636", "363"],
+    correctIndex: 0
+  },
+  {
+    question: "3.427427…의 순환마디는?",
+    choices: ["427", "274", "742", "4274"],
+    correctIndex: 0
+  },
+  {
+    question: "1.265265265…의 순환마디는?",
+    choices: ["265", "652", "526", "2652"],
+    correctIndex: 0
+  },
+  {
+    question: "0.1252525…의 순환마디는?",
+    choices: ["25", "52", "125", "252"],
+    correctIndex: 0
+  },
+  {
+    question: "0.12481248…의 순환마디는?",
+    choices: ["1248", "2481", "4812", "8124"],
+    correctIndex: 0
+  },
+  {
+    question: "7.52175175175…의 순환마디는?",
+    choices: ["175", "751", "517", "1751"],
+    correctIndex: 0
+  },
+
+  // #50(0), #52(0), #54(0) (분수 -> 소수, 막대표기)
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{3}{22}\\)",
+    choices: [
+      "\\(0.1\\overline{36}\\)",   // correct
+      "\\(0.\\overline{136}\\)",
+      "\\(0.\\overline{13}\\)",
+      "\\(0.\\overline{36}\\)"
+    ],
+    correctIndex: 0,
+    explanation: "정답: \\(0.13\\overline{63}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{27}{11}\\)",
+    choices: [
+      "\\(2.\\overline{45}\\)",   // correct
+      "\\(2.4\\overline{5}\\)",
+      "\\(2.\\overline{454}\\)",
+      "\\(2.\\overline{54}\\)"
+    ],
+    correctIndex: 0,
+    explanation: "정답: \\(2.\\overline{45}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{20}{27}\\)",
+    choices: [
+      "\\(0.\\overline{740}\\)",   // correct
+      "\\(0.7\\overline{40}\\)",
+      "\\(0.\\overline{74}\\)",
+      "\\(0.\\overline{047}\\)"
+    ],
+    correctIndex: 0,
+    explanation: "정답: \\(0.\\overline{740}\\)"
+  },
+
+  // #56,58,60,62,64,66,68,70 => correctIndex:3
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{4}{9}\\)",
+    choices: [
+      "\\(0.4\\)",
+      "\\(0.\\overline{0}\\)",
+      "\\(0.49\\overline{4}\\)",
+      "\\(0.\\overline{4}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(0.\\overline{4}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{1}{30}\\)",
+    choices: [
+      "\\(0.03\\)",
+      "\\(0.\\overline{03}\\)",
+      "\\(0.0\\overline{003}\\)",
+      "\\(0.0\\overline{3}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(0.0\\overline{3}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{14}{33}\\)",
+    choices: [
+      "\\(0.\\overline{24}\\)",
+      "\\(0.\\overline{4}\\)",
+      "\\(0.42\\)",
+      "\\(0.\\overline{42}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(0.\\overline{42}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{13}{6}\\)",
+    choices: [
+      "\\(2.\\overline{1}\\)",
+      "\\(2.1\\overline{0}\\)",
+      "\\(2.66\\overline{1}\\)",
+      "\\(2.1\\overline{6}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(2.1\\overline{6}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{1}{3}\\)",
+    choices: [
+      "\\(0.3\\)",
+      "\\(0.\\overline{2}\\)",
+      "\\(0.33\\)",
+      "\\(0.\\overline{3}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(0.\\overline{3}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{7}{6}\\)",
+    choices: [
+      "\\(1.16\\)",
+      "\\(1.\\overline{16}\\)",
+      "\\(1.6\\overline{1}\\)",
+      "\\(1.1\\overline{6}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(1.1\\overline{6}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{11}{6}\\)",
+    choices: [
+      "\\(1.83\\)",
+      "\\(1.\\overline{83}\\)",
+      "\\(1.833\\)",
+      "\\(1.8\\overline{3}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(1.8\\overline{3}\\)"
+  },
+  {
+    question: "다음 분수를 소수로 고쳐 순환마디를 이용하여 간단히 나타내어라: \\(\\dfrac{4}{27}\\)",
+    choices: [
+      "\\(0.148\\)",
+      "\\(0.\\overline{14}\\)",
+      "\\(0.14\\overline{8}\\)",
+      "\\(0.\\overline{148}\\)"
+    ],
+    correctIndex: 3,
+    explanation: "정답: \\(0.\\overline{148}\\)"
+  },
+
+  // #72 (뒤는 0이 이어짐)
+  {
+    question: "1.3452의 소수점 아래 101째 자리의 숫자는? (소수점 뒤에 더 이상의 자리는 0이 이어진다고 가정)",
+    choices: ["3", "4", "5", "0"],
+    correctIndex: 3
+  },
+  // #74 (새 조건: 0.15273 이후 '15273' 반복)
+  {
+    question: "0.15273의 소수점 아래 42번째 자리의 숫자는? (소수점 아래 '15273'이 계속 반복된다고 가정)",
+    // -> (0.15273 15273 15273 15273 ...)
+    choices: ["5", "2", "7", "3"],
+    correctIndex: 0
+  },
+  // #76 (9/37 = 0.\overline{243}, '243' 반복)
+  {
+    question: "\\(\\dfrac{9}{37}\\)를 소수로 나타낼 때, 소수점 아래 100째 자리의 숫자는? (소수점 아래 '243'이 계속 반복)",
+    choices: ["2", "4", "3", "0"],
+    correctIndex: 0
+  },
+  // #78 (2/37 = 0.\overline{054}, '054' 반복)
+  {
+    question: "\\(\\dfrac{2}{37}\\)를 소수로 나타낼 때, 소수점 아래 50번째 자리의 숫자는? (소수점 아래 '054'가 반복)",
+    choices: ["5", "4", "0", "2"],
+    correctIndex: 0
+  },
+  // #80 (8/37 = 0.\overline{216}, '216' 반복)
+  {
+    question: "\\(\\dfrac{8}{37}\\)를 소수로 나타낼 때, 소수점 아래 20번째 자리의 숫자는? (소수점 아래 '216'이 반복)",
+    choices: ["1", "2", "6", "0"],
+    correctIndex: 0
+  },
+
+  // #82 (0.9 □ 1) => 정답 "<"
+  {
+    question: "0.9 □ 1",
+    // 원본: ["=", ">", "<", "\\(\\ge\\)"], 정답=3("<")로 수정
+    choices: ["=", ">", "\\(\\ge\\)", "<"],
+    correctIndex: 3
+  },
+  // #84,86,88,90,92,94,96,98,100,102,104,106,108,110 (대소비교)
+  {
+    question: "2.45 □ 2.46",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 2
+  },
+  {
+    question: "0.468 □ 0.468",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "0.53 □ 0.53",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "1.07 □ 1.076",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 2
+  },
+  {
+    question: "0.434 □ 0.434",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "0.97 □ 0.97",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "1.9 □ 1.9",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "2.743 □ 2.744",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 2
+  },
+  {
+    question: "2.101 □ 2.101",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "0.14 □ 0.143",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 2
+  },
+  {
+    question: "1.234 □ 1.234",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "1.34 □ 1.34",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "\\(\\dfrac{1}{5}\\) □ 0.2",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 0
+  },
+  {
+    question: "3.48 □ 3.49",
+    choices: ["=", ">", "<", "\\(\\ge\\)"],
+    correctIndex: 2
+  }
+];
+
+// ------------------ 전역 상태 ------------------
+let currentQuestionIndex = 0;   
+let score = 0;                  
+let lives = 3;                  
+let timerInterval = null;       
+let totalTime = 0;              
+let totalTimeInterval = null;   
+let questionsOrder = [];        
+let perQuestionTime = 0;        
+let currentEnergy = 100;        
+let nameValue = "";             
+let difficulty = "";            
+let pointPerQuestion = 0;       
+
+// 난이도 선택 버튼 세팅
+document.querySelectorAll('.difficulty-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const nameInput = document.getElementById('name-input');
+    if (!nameInput.value.trim()) {
+      alert("이름을 입력하세요!");
+      return;
+    }
+    nameValue = nameInput.value.trim();
+    difficulty = btn.dataset.level;
+
+    switch(difficulty) {
+      case "최상":
+        perQuestionTime = 20;  pointPerQuestion = 20;  break;
+      case "상":
+        perQuestionTime = 30;  pointPerQuestion = 15;  break;
+      case "중":
+        perQuestionTime = 40;  pointPerQuestion = 13;  break;
+      case "하":
+        perQuestionTime = 999999;  pointPerQuestion = 10;  break;
+    }
+    
+    startGame();
+  });
+});
+
+// ------------------ 게임 시작 ------------------
+function startGame() {
+  document.getElementById('start-page').classList.add('hidden');
+  document.getElementById('quiz-container').classList.remove('hidden');
+
+  // 문제 순서 섞기
+  questionsOrder = [...Array(questionsData.length).keys()];
+  shuffleArray(questionsOrder);
+
+  // 보기(choices)도 무작위 재배치
+  randomizeQuestionChoices(questionsData);
+
+  currentQuestionIndex = 0;
+  score = 0;
+  lives = 3;
+  totalTime = 0;
+  currentEnergy = 100;
+
+  updateUI();
+  
+  // 전체 진행 시간 타이머
+  if (totalTimeInterval) clearInterval(totalTimeInterval);
+  totalTimeInterval = setInterval(() => {
+    totalTime++;
+    document.getElementById('total-time').textContent = `총 진행 시간: ${totalTime}초`;
+  }, 1000);
+
+  loadQuestion();
+}
+
+// ------------------ 문제 표시 ------------------
+function loadQuestion() {
+  if (currentQuestionIndex >= questionsData.length) {
+    endGame(true);
+    return;
+  }
+  if (timerInterval) clearInterval(timerInterval);
+
+  const qIndex = questionsOrder[currentQuestionIndex];
+  const questionObj = questionsData[qIndex];
+
+  // 문제 텍스트
+  document.getElementById('question-text').innerHTML = questionObj.question;
+
+  // 보기
+  const choicesContainer = document.getElementById('choices-container');
+  choicesContainer.innerHTML = "";
+  questionObj.choices.forEach((choiceText, idx) => {
+    const choiceDiv = document.createElement('div');
+    choiceDiv.className = "choice";
+    choiceDiv.innerHTML = choiceText;
+    choiceDiv.addEventListener('click', () => handleAnswer(idx));
+    choicesContainer.appendChild(choiceDiv);
+  });
+
+  // MathJax 렌더링 (막대표기 등 표시)
+  MathJax.typeset();
+
+  // 에너지바 초기화
+  currentEnergy = 100;
+  updateEnergyBar();
+
+  // 시간제한(하가 아닐 때)
+  if (difficulty !== "하") {
+    timerInterval = setInterval(() => {
+      const decrement = 100 / perQuestionTime;
+      currentEnergy -= decrement;
+      if (currentEnergy <= 0) {
+        clearInterval(timerInterval);
+        loseLifeByTimeout();
+      } else {
+        updateEnergyBar();
+      }
+    }, 1000);
+  }
+}
+
+// ------------------ 정답 처리 ------------------
+function handleAnswer(selectedIdx) {
+  const qIndex = questionsOrder[currentQuestionIndex];
+  const questionObj = questionsData[qIndex];
+  const correctIdx = questionObj.correctIndex;
+
+  if (timerInterval) clearInterval(timerInterval);
+
+  if (selectedIdx === correctIdx) {
+    // 정답
+    score += pointPerQuestion;
+    if (questionObj.explanation) {
+      alert(`정답입니다!\n${questionObj.explanation}`);
+    } else {
+      alert("정답입니다!");
+    }
+  } else {
+    // 오답
+    lives--;
+    const correctChoice = questionObj.choices[correctIdx];
+    if (questionObj.explanation) {
+      alert(`오답입니다!\n정답: ${correctChoice}\n(${questionObj.explanation})`);
+    } else {
+      alert(`오답입니다!\n정답: ${correctChoice}`);
+    }
+  }
+
+  currentQuestionIndex++;
+  checkLivesAndContinue();
+}
+
+// ------------------ 시간 초과 처리 ------------------
+function loseLifeByTimeout() {
+  lives--;
+  alert("시간이 초과되었습니다! 기회가 1 감소합니다.");
+  currentQuestionIndex++;
+  checkLivesAndContinue();
+}
+
+// ------------------ 남은 기회 체크 ------------------
+function checkLivesAndContinue() {
+  if (lives <= 0) {
+    endGame(false);
+  } else {
+    updateUI();
+    loadQuestion();
+  }
+}
+
+function updateUI() {
+  document.getElementById('score-display').textContent = `점수: ${score}`;
+  document.getElementById('lives-display').textContent = `남은 기회: ${lives}`;
+}
+
+function updateEnergyBar() {
+  const energyInner = document.getElementById('energy-inner');
+  energyInner.style.width = currentEnergy + "%";
+}
+
+// ------------------ 게임 종료 ------------------
+function endGame(isClear) {
+  if (timerInterval) clearInterval(timerInterval);
+  if (totalTimeInterval) clearInterval(totalTimeInterval);
+
+  document.getElementById('quiz-container').classList.add('hidden');
+  document.getElementById('end-page').classList.remove('hidden');
+  
+  const endTitle = document.getElementById('end-title');
+  const finalScore = document.getElementById('final-score');
+  
+  endTitle.textContent = isClear ? "게임 클리어!" : "게임 오버!";
+  finalScore.textContent = `최종 점수: ${score}`;
+}
+
+// ------------------ 점수 전송 ------------------
+document.getElementById('submit-score').addEventListener('click', () => {
+  saveData("순환소수의 표현과 대소관계", nameValue, score, totalTime);
+});
+</script>
+</body>
+</html>
